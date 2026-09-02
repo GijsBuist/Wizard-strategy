@@ -1,0 +1,59 @@
+==============================================================================
+                      WIZARD AI - DEVELOPMENT ROADMAP & TO-DO LIST
+==============================================================================
+
+PROJECT PHASES
+--------------
+Phase 1: Game Engine & Foundations
+  - Build a fast, bug-free, deterministic rule engine for Wizard and unit test all edge cases.
+
+Phase 2: Baseline Agents & Framework
+  - Implement random and rule-based baseline agents to establish benchmark win rates.
+
+Phase 3: Core AI Implementation
+  - Implement search/learning algorithms tailored for imperfect information games
+    (ISMCTS and/or Deep Reinforcement Learning).
+
+Phase 4: Evaluation & Benchmarking
+  - Build an automated tournament runner to pit agents against each other and track strategy convergence over time.
+
+Phase 5: Optimization & Refinement
+  - Speed up critical simulation loops (using Numba, Cython, or C++ extensions) and tune model hyperparameters.
+
+
+PROJECT TO-DO LIST
+------------------
+
+1. Project Setup & Setup Hygiene
+   [ ] Create a .gitignore file to ignore .venv, __pycache__, and checkpoint outputs.
+   [ ] Set up the directory structure (src/engine/, src/agents/, tests/, experiments/).
+   [ ] Create requirements.txt containing dependencies (numpy, torch, pytest, matplotlib).
+
+2. Rule Engine Development (src/engine/)
+   [ ] Design card data structures (60 cards total: 52 standard cards in 4 suits, 4 Wizards, 4 Jesters).
+   [ ] Implement deck management (shuffling, dealing hands based on current round number).
+   [ ] Write the bidding system logic (simultaneous or sequential bids depending on standard rules).
+   [ ] Implement suit-following and trick evaluation rules:
+       - First non-Jester card sets lead suit.
+       - First Wizard played wins the trick instantly.
+       - If all Jesters are played, first card played wins.
+       - Highest card of lead suit or trump suit wins otherwise.
+   [ ] Implement scoring logic (+20 points for exact bid + 10 per trick; -10 per trick off target).
+
+3. Engine Verification (tests/)
+   [ ] Write pytest unit tests for Wizard/Jester priority edge cases (e.g., lead Jester, all Jesters, trump Wizard).
+   [ ] Unit test score calculations across positive and negative scenarios.
+   [ ] Run 100,000 random auto-play games to ensure zero state crashes or rule violations.
+
+4. Baseline Agents (src/agents/)
+   [ ] Random Agent: Plays valid cards completely at random; bids randomly.
+   [ ] Heuristic/Rule-Based Agent: Bids based on count of Wizards, high trumps, and short suits; plays lowest/highest cards depending on whether current bid target is met.
+
+5. AI Development (src/ai/)
+   [ ] Define the state observation vector (hand representation, lead suit, trump card, current bids, trick history).
+   [ ] Option A (Search): Implement Information Set MCTS (ISMCTS) for handling hidden opponent hands.
+   [ ] Option B (Learning): Build an OpenAI Gym/PettingZoo wrapper environment for PyTorch training (PPO / Deep CFR).
+
+6. Tournament & Evaluation Loop (experiments/)
+   [ ] Build a round-robin tournament script to run 1,000+ matches between agent versions.
+   [ ] Generate plots showing agent win rates and scoring performance vs. baselines.
