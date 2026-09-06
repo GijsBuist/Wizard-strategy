@@ -1,5 +1,6 @@
 import json
 import os
+import random
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -19,9 +20,23 @@ game_state = {
     "status": "waiting",
     "round": 1,
     "players": {},
+    "deck": []
 }
 
 connected_clients = set()
+
+def create_deck():
+    # Standard Wizard deck: 60 cards total
+    # Suits: Red, Blue, Green, Yellow (1-13 each = 52 cards)
+    # 4 Wizards, 4 Jesters = 8 cards
+    deck = []
+    for suit in ["red", "blue", "green", "yellow"]:
+        for value in range(1, 14):
+            deck.append({"type": "number", "suit": suit, "value": value})
+    for _ in range(4):
+        deck.append({"type": "wizard", "suit": None, "value": 14})
+        deck.append({"type": "jester", "suit": None, "value": 0})
+    return deck
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -47,9 +62,9 @@ async def websocket_endpoint(websocket: WebSocket):
             
             if message.get("type") == "START_GAME":
                 if len(game_state["players"]) >= 3:
-                    game_state["status"] = "bidding"
+                    start_round()
                 await broadcast_state()
-                
+                    
             elif message.get("type") == "SUBMIT_BID":
                 bid_val = message.get("bid")
                 if player_id in game_state["players"]:
@@ -63,6 +78,18 @@ async def websocket_endpoint(websocket: WebSocket):
         if len(game_state["players"]) < 3:
             game_state["status"] = "waiting"
         await broadcast_state()
+
+def start_round():
+    game_state["status"] = "bidding"
+    deck = create_deck()
+    random.shuffle(deck)
+    
+    # Deal cards for the current round (e.g., Round 1 = 1 card each)
+    cards_to_deal = game_state["round"]
+    for pid, pdata in game_state["players"].items():
+        pdata["hand"] = [deck.pop() for _ in range(cards_to_deal)]
+        pdata["bid"] = None
+        pdata["won"] = 0
 
 async def broadcast_state():
     state_json = json.dumps(game_state)
