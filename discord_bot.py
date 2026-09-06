@@ -52,6 +52,20 @@ def format_trick_table(trick: list[tuple[int, Card]], players: list) -> str:
         return "*No cards played yet*"
     return "\n".join([f"• **{players[p].display_name}**: {format_card(c)}" for p, c in trick])
 
+def sort_hand(hand: list[Card]) -> list[Card]:
+    suit_order = {Suit.BLUE: 1, Suit.GREEN: 2, Suit.RED: 3, Suit.YELLOW: 4}
+    
+    def card_sort_key(card: Card):
+        if card.card_type == CardType.WIZARD:
+            return (2, 0, 0)
+        elif card.card_type == CardType.JESTER:
+            return (3, 0, 0)
+        else:
+            s_val = suit_order.get(card.suit, 5)
+            return (1, s_val, card.value)
+            
+    return sorted(hand, key=card_sort_key)
+
 
 class BotPlayer:
     def __init__(self, name: str, agent: RandomAgent):
@@ -105,7 +119,7 @@ class BidSelectView(discord.ui.View):
             if is_disabled:
                 await interaction.response.send_message("❌ This bid is illegal because total bids cannot equal the round tricks!", ephemeral=True)
                 return
-            await interaction.response.send_message(f"✅ Bid set to **{bid_val}**", ephemeral=True)
+            await interaction.response.defer()
             self.stop()
             if not self.future_result.done():
                 self.future_result.set_result(bid_val)
@@ -154,7 +168,7 @@ class CardSelectView(discord.ui.View):
 
     def make_callback(self, card: Card):
         async def callback(interaction: discord.Interaction):
-            await interaction.response.send_message(f"Played: {format_card(card)}", ephemeral=True)
+            await interaction.response.defer()
             self.stop()
             if not self.future_result.done():
                 self.future_result.set_result(card)
@@ -184,7 +198,7 @@ class TrumpSelectView(discord.ui.View):
 
     def make_callback(self, suit: Suit):
         async def callback(interaction: discord.Interaction):
-            await interaction.response.send_message(f"Selected Trump: {SUIT_EMOJIS[suit]} **{suit.name.capitalize()}**", ephemeral=True)
+            await interaction.response.defer()
             self.stop()
             if not self.future_result.done():
                 self.future_result.set_result(suit)
@@ -245,7 +259,6 @@ class DiscordWizardGame:
             embed.add_field(name="Active Trump", value=trump_str, inline=True)
             embed.add_field(name="🎯 Lead Suit", value=lead_str, inline=False)
 
-            # Blind round 1 check: Hide your own hand, but show others
             if self.blind_round_one and self.state.round_number == 1:
                 embed.add_field(name="🎴 Your Hand", value="🔒 *Hidden (Round 1 Blind Variant)*", inline=False)
                 
@@ -298,10 +311,9 @@ class DiscordWizardGame:
             self.deck.shuffle()
             temp_hands, temp_trump = self.deck.deal(self.num_players, round_num)
             
-            self.state.hands = temp_hands
+            self.state.hands = {p_id: sort_hand(h) for p_id, h in temp_hands.items()}
             self.state.trump_card = temp_trump
             
-            # Resolve Trump Suit properly before bidding starts
             if temp_trump and temp_trump.card_type == CardType.WIZARD:
                 dealer_user = self.players[self.state.dealer_id]
                 dealer_choice = await self.prompt_trump_choice(dealer_user, self.state.dealer_id)
@@ -320,7 +332,6 @@ class DiscordWizardGame:
             self.state.bids = {}
             self.state.current_player = starting_p
 
-            # --- BIDDING PHASE ---
             for bid_idx in range(self.num_players):
                 curr_p = self.state.current_player
                 player_user = self.players[curr_p]
@@ -332,7 +343,6 @@ class DiscordWizardGame:
 
             self.state.current_player = starting_p
 
-            # --- PLAYING PHASE ---
             for trick_num in range(round_num):
                 for _ in range(self.num_players):
                     curr_p = self.state.current_player
@@ -352,7 +362,6 @@ class DiscordWizardGame:
                         )
                         await asyncio.sleep(4.0)
 
-            # --- ROUND SUMMARY ---
             round_pts = self.state.calculate_round_scores()
             score_embed = discord.Embed(title=f"📊 Round {round_num}/{total_rounds} Complete!", color=discord.Color.green())
             for p_id in range(self.num_players):
@@ -369,7 +378,6 @@ class DiscordWizardGame:
             await asyncio.sleep(3.0)
             self.state.dealer_id = (self.state.dealer_id + 1) % self.num_players
 
-        # --- GAME OVER ---
         final_embed = discord.Embed(title="🎉 GAME OVER - Final Results", color=discord.Color.purple())
         for p_id in range(self.num_players):
             final_embed.add_field(name=self.players[p_id].display_name, value=f"**{self.state.scores[p_id]}** pts", inline=True)
@@ -379,7 +387,6 @@ class DiscordWizardGame:
         await self.channel.send(embed=final_embed)
 
     async def prompt_bid(self, user, player_id: int, round_num: int, is_last_bidder: bool) -> int:
-        # Calculate forbidden bid for the last bidder if restriction is enabled
         forbidden_bid = None
         if self.enable_bid_restriction and is_last_bidder:
             sum_so_far = sum(self.state.bids.values())
@@ -428,7 +435,6 @@ class DiscordWizardGame:
 
         embed = discord.Embed(title="🧙 Wizard Turned! Pick Trump Suit", color=discord.Color.gold())
         
-        # Show hand so you can make an informed choice
         hand_str = "🔒 *Hidden (Round 1 Blind Variant)*" if (self.blind_round_one and self.state.round_number == 1) else format_hand(self.state.hands.get(dealer_id, []))
         embed.add_field(name="🎴 Your Hand", value=hand_str, inline=False)
 
