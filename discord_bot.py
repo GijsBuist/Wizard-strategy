@@ -1,4 +1,4 @@
-# discord_bot.py
+# discord_bot.py (With configurable total players from 3 to 6)
 import os
 import sys
 import asyncio
@@ -17,6 +17,7 @@ from src.engine.deck import Deck
 from src.engine.rules import get_legal_plays
 from src.engine.state import GameState
 from src.agents.random_agent import RandomAgent
+from src.agents.heuristic_agent import HeuristicAgent
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -68,7 +69,7 @@ def sort_hand(hand: list[Card]) -> list[Card]:
 
 
 class BotPlayer:
-    def __init__(self, name: str, agent: RandomAgent):
+    def __init__(self, name: str, agent):
         self.display_name = name
         self.mention = f"🤖 **{name}**"
         self.agent = agent
@@ -235,8 +236,13 @@ class DiscordWizardGame:
             pass
 
     async def update_all_boards(self, title: str, active_turn: int = None, view_p_id: int = None, view: discord.ui.View = None, completed_trick: list = None):
-        if self.state.trump_suit:
-            trump_str = f"{SUIT_EMOJIS[self.state.trump_suit]} **{self.state.trump_suit.name.capitalize()}**"
+        active_trump_suit = getattr(self.state, "trump_suit", None)
+        if not active_trump_suit and self.state.trump_card:
+            if self.state.trump_card.card_type not in (CardType.WIZARD, CardType.JESTER):
+                active_trump_suit = self.state.trump_card.suit
+
+        if active_trump_suit:
+            trump_str = f"{SUIT_EMOJIS[active_trump_suit]} **{active_trump_suit.name.capitalize()}**"
         else:
             trump_str = "None (No Trump / Jester)"
 
@@ -314,16 +320,20 @@ class DiscordWizardGame:
             self.state.hands = {p_id: sort_hand(h) for p_id, h in temp_hands.items()}
             self.state.trump_card = temp_trump
             
-            if temp_trump and temp_trump.card_type == CardType.WIZARD:
-                dealer_user = self.players[self.state.dealer_id]
-                dealer_choice = await self.prompt_trump_choice(dealer_user, self.state.dealer_id)
-                self.state.trump_suit = dealer_choice
-            elif temp_trump and temp_trump.card_type == CardType.JESTER:
-                self.state.trump_suit = None
-            elif temp_trump:
-                self.state.trump_suit = temp_trump.suit
+            if temp_trump:
+                if temp_trump.card_type == CardType.WIZARD:
+                    dealer_user = self.players[self.state.dealer_id]
+                    dealer_choice = await self.prompt_trump_choice(dealer_user, self.state.dealer_id)
+                    self.state.trump_suit = dealer_choice
+                elif temp_trump.card_type == CardType.JESTER:
+                    self.state.trump_suit = None
+                else:
+                    self.state.trump_suit = temp_trump.suit
             else:
                 self.state.trump_suit = None
+
+            if temp_trump and temp_trump.card_type not in (CardType.WIZARD, CardType.JESTER):
+                self.state.trump_suit = temp_trump.suit
 
             self.state.lead_suit = None
             self.state.current_trick = []
@@ -332,13 +342,20 @@ class DiscordWizardGame:
             self.state.bids = {}
             self.state.current_player = starting_p
 
+            await self.update_all_boards(title=f"🎯 Bidding Phase — Round {round_num}")
+
             for bid_idx in range(self.num_players):
                 curr_p = self.state.current_player
                 player_user = self.players[curr_p]
                 is_last = (bid_idx == self.num_players - 1)
                 
+                await self.update_all_boards(title=f"🎯 Bidding Phase — Round {round_num}", active_turn=curr_p)
+                
                 bid = await self.prompt_bid(player_user, curr_p, round_num, is_last)
                 self.state.record_bid(curr_p, bid)
+                
+                await self.update_all_boards(title=f"🎯 Bidding Phase — Round {round_num}")
+                
                 self.state.current_player = (self.state.current_player + 1) % self.num_players
 
             self.state.current_player = starting_p
@@ -351,9 +368,13 @@ class DiscordWizardGame:
                     hand = self.state.hands[curr_p]
                     playable = get_legal_plays(hand, self.state.lead_suit)
                     
+                    await self.update_all_boards(title=f"⚔️ Round {round_num} | Trick {trick_num + 1}/{round_num}", active_turn=curr_p)
+
                     card = await self.prompt_card_play(user, curr_p, hand, playable, round_num, trick_num)
                     winner = self.state.play_card(curr_p, card)
                     
+                    await self.update_all_boards(title=f"⚔️ Round {round_num} | Trick {trick_num + 1}/{round_num}")
+
                     if winner is not None:
                         completed_trick_cards = list(self.state.last_trick)
                         await self.update_all_boards(
@@ -394,7 +415,9 @@ class DiscordWizardGame:
 
         if getattr(user, "is_bot", False):
             await asyncio.sleep(0.8)
-            return user.agent.select_bid(self.state, player_id, forbidden_bid=forbidden_bid)
+            if hasattr(user.agent, "select_bid") and "forbidden_bid" in user.agent.select_bid.__code__.co_varnames:
+                return user.agent.select_bid(self.state, player_id, forbidden_bid=forbidden_bid)
+            return user.agent.select_bid(self.state, player_id)
 
         loop = asyncio.get_event_loop()
         future = loop.create_future()
@@ -439,7 +462,12 @@ class DiscordWizardGame:
         embed.add_field(name="🎴 Your Hand", value=hand_str, inline=False)
 
         await self.render_and_update(dealer_id, embed, view)
-        return await future
+        trump_suit = await future
+
+        self.state.trump_suit = trump_suit
+        await self.update_all_boards(title=f"🎯 Bidding Phase — Round {self.state.round_number}")
+        
+        return trump_suit
 
 
 # --- SLASH COMMANDS ---
@@ -447,34 +475,48 @@ class DiscordWizardGame:
 @bot.tree.command(name="start_wizard", description="Start a Wizard game lobby in this channel")
 @app_commands.describe(
     rounds="Optional custom round count (defaults to max rounds)",
+    total_players="Total number of players in the game (3 to 6, default 3)",
     bid_restriction="Prevent total bids from matching round tricks (default True)",
-    blind_round_one="Hide your hand in round 1 (default True)"
+    blind_round_one="Hide your hand in round 1 (default True)",
+    bot_type="Choose AI type for empty slots (heuristic or random)"
 )
+@app_commands.choices(bot_type=[
+    app_commands.Choice(name="Heuristic (Smart)", value="heuristic"),
+    app_commands.Choice(name="Random (Basic)", value="random")
+])
 async def start_wizard(
     interaction: discord.Interaction, 
     rounds: Optional[int] = None, 
+    total_players: int = 3,
     bid_restriction: bool = True, 
-    blind_round_one: bool = True
+    blind_round_one: bool = True,
+    bot_type: str = "heuristic"
 ):
     channel_id = interaction.channel_id
     if channel_id in games:
         await interaction.response.send_message("A game is already in progress in this channel!", ephemeral=True)
         return
 
+    if not (3 <= total_players <= 6):
+        await interaction.response.send_message("❌ Total players must be between 3 and 6.", ephemeral=True)
+        return
+
     games[channel_id] = {
         "host": interaction.user, 
         "players": [interaction.user], 
+        "max_players": total_players,
         "rounds": rounds, 
         "bid_restriction": bid_restriction,
         "blind_round_one": blind_round_one,
+        "bot_type": bot_type,
         "started": False
     }
 
     round_msg = f"**{rounds} rounds**" if rounds else "**Full Game (Max Rounds)**"
     await interaction.response.send_message(
         f"🧙 **Wizard lobby opened by {interaction.user.mention}!**\n"
-        f"⚙️ **Length:** {round_msg} | Bid Restriction: `{bid_restriction}` | Blind Round 1: `{blind_round_one}`\n"
-        f"Type `/join_wizard` to join. (Need 3+ players; empty seats filled by AI)."
+        f"⚙️ **Size:** {total_players} players max | **Length:** {round_msg} | Bid Restriction: `{bid_restriction}` | Blind Round 1: `{blind_round_one}` | Bot Type: `{bot_type}`\n"
+        f"Type `/join_wizard` to join."
     )
 
 
@@ -490,9 +532,13 @@ async def join_wizard(interaction: discord.Interaction):
         await interaction.response.send_message("You are already in the lobby!", ephemeral=True)
         return
     
+    if len(lobby["players"]) >= lobby["max_players"]:
+        await interaction.response.send_message(f"❌ This lobby is already full ({lobby['max_players']} players maximum).", ephemeral=True)
+        return
+
     lobby["players"].append(interaction.user)
     player_names = ", ".join([p.display_name for p in lobby["players"]])
-    await interaction.response.send_message(f"✅ {interaction.user.mention} joined! Players ({len(lobby['players'])}): {player_names}")
+    await interaction.response.send_message(f"✅ {interaction.user.mention} joined! Players ({len(lobby['players'])}/{lobby['max_players']}): {player_names}")
 
 
 @bot.tree.command(name="begin_game", description="Host begins the game")
@@ -508,16 +554,24 @@ async def begin_game(interaction: discord.Interaction):
         return
 
     players = list(lobby["players"])
+    max_players = lobby.get("max_players", 3)
+    bot_type = lobby.get("bot_type", "heuristic")
     bot_count = 1
-    while len(players) < 3:
-        bot_agent = RandomAgent(f"WizardBot-{bot_count}")
-        bot_player = BotPlayer(f"WizardBot-{bot_count}", bot_agent)
+    
+    while len(players) < max_players:
+        bot_name = f"WizardBot-{bot_count}"
+        if bot_type == "heuristic":
+            bot_agent = HeuristicAgent(bot_name)
+        else:
+            bot_agent = RandomAgent(bot_name)
+            
+        bot_player = BotPlayer(bot_name, bot_agent)
         players.append(bot_player)
         bot_count += 1
 
     lobby["started"] = True
     player_list_str = ", ".join([p.display_name for p in players])
-    await interaction.response.send_message(f"🚀 **Wizard game starting now! Check your Direct Messages.**\nPlayers: {player_list_str}")
+    await interaction.response.send_message(f"🚀 **Wizard game starting now! Check your Direct Messages.**\nPlayers ({len(players)}): {player_list_str} (Bot Type: `{bot_type}`)")
     
     game = DiscordWizardGame(
         channel=interaction.channel, 
